@@ -1,0 +1,5 @@
+aioredis
+asyncpg
+psycopg2-binary
+dotenv
+websockets

@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:latest
+    container_name: redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    restart: always
+    networks:
+      - teaker_list
+
+  teaklisten:
+    build: 
+      context: teaklisten/
+      dockerfile: Dockerfile
+    container_name: okx-teaklisten
+    networks:
+      - teaker_list
+    restart: always
+    depends_on:
+      - redis
+  elk:
+    build: 
+      context: elk/
+      dockerfile: Dockerfile
+    container_name: okx-elk_teak
+    networks:
+      - teaker_list
+    restart: always
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+
+networks:
+  teaker_list: 
+    driver: bridge
