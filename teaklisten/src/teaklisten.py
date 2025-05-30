@@ -18,16 +18,6 @@ RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", 5))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# async def connect_redis():
-#     while True:
-#         try:
-#             r = await aioredis.from_url(REDIS_DSN, encoding="utf-8", decode_responses=True)
-#             await r.ping()
-#             logging.info("Connected to Redis")
-#             return r
-#         except Exception as e:
-#             logging.warning(f"Redis connect error: {e}, retry in {RECONNECT_DELAY}s")
-#             await asyncio.sleep(RECONNECT_DELAY)
 
 async def consume_okx(redis):
     while True:

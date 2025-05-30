@@ -18,32 +18,11 @@ dotenv.load_dotenv()
 
 PG_TICKS_TABLE  = os.getenv("PG_TICKS_TABLE", "ticks")
 PG_CANDLES_TABLE= os.getenv("PG_CANDLES_TABLE", "candles")
+REDIS_KEY       = os.getenv("REDIS_KEY", "ticks")
 BGSAVE_POLL_SEC = 1
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# async def connect_redis():
-#     while True:
-#         try:
-#             r = await aioredis.from_url(REDIS_DSN, encoding="utf-8", decode_responses=True)
-#             await r.ping()
-#             logging.info("Connected to Redis")
-#             return r
-#         except Exception as e:
-#             logging.warning(f"Redis connect error: {e}, retry in {RECONNECT_DELAY}s")
-#             await asyncio.sleep(RECONNECT_DELAY)
-
-# async def connect_pg():
-    # while True:
-    #     try:
-    #         pool = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
-    #         async with pool.acquire() as conn:
-    #             await conn.execute("SELECT 1;")
-    #         logging.info("Connected to Postgres")
-    #         return pool
-    #     except Exception as e:
-    #         logging.warning(f"Postgres connect error: {e}, retry in {RECONNECT_DELAY}s")
-    #         await asyncio.sleep(RECONNECT_DELAY)
 
 async def compute_and_store_candles(pg_pool):
     """

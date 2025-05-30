@@ -4,9 +4,11 @@ import logging
 import aioredis
 
 import os
+import dotenv
+
+dotenv.load_dotenv()
 
 REDIS_DSN       = os.getenv("REDIS_DSN", "redis://redis:6379/0")
-REDIS_KEY       = os.getenv("REDIS_KEY", "ticks")
 PG_DSN          = os.getenv("PG_DSN", "postgresql://user:pass@postgres:5432/dbname")
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", 5))
 
