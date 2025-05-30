@@ -16,7 +16,7 @@ services:
       dockerfile: Dockerfile
     container_name: okx-teaklisten
     volumes:
-      - ./utils:/teaklisten/utils
+      - ./utils:/teaklisten/src/utils
     networks:
       - teaker_list
     restart: always
@@ -28,7 +28,20 @@ services:
       dockerfile: Dockerfile
     container_name: okx-elk_teak
     volumes:
-      - ./utils:/elk/utils
+      - ./utils:/elk/src/utils
+    networks:
+      - teaker_list
+    restart: always
+    depends_on:
+      - redis
+
+  test_import:
+    build: 
+      context: test_import/
+      dockerfile: Dockerfile
+    container_name: okx-test_import
+    volumes:
+      - ./utils:/test_import/src/utils
     networks:
       - teaker_list
     restart: always

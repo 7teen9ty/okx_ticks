@@ -8,6 +8,8 @@ import dotenv
 import aioredis
 import asyncpg
 
+os.listdir()
+
 from utils.connect import connect_pg, connect_redis
 
 from datetime import datetime, timedelta
