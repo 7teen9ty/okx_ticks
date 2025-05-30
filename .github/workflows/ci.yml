@@ -1,0 +1,80 @@
+name: Deploy Spamer
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  clear_older:
+    runs-on: self-hosted
+    steps:
+      - name: Down Docker old
+        run: |
+          docker-compose down
+          
+      - name: clear oldest
+        run: |
+          echo "${{secrets.USER_SUDO}}" | sudo -S chown -R artem:artem /home/artem/actions-runner/_work/okx_ticks
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+
+  create_env:
+    runs-on: self-hosted
+    needs: clear_older
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create .env file
+        env:
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_USER: ${{ secrets.REDIS_USER }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          NOW_PAYMENTS_API_KEY: ${{ secrets.NOW_PAYMENTS_API_KEY }}
+          NOWPAYMENTS_PUBLIC: ${{ secrets.NOWPAYMENTS_PUBLIC }}
+          NOWPAYMENTS_EMAIL: ${{ secrets.NOWPAYMENTS_EMAIL }}
+          NOWPAYMENTS_PASSWORD: ${{ secrets.NOWPAYMENTS_PASSWORD }}
+        run: |
+          cat <<EOF > /home/artem/.env
+          REDIS_HOST=${REDIS_HOST}
+          REDIS_USER=${REDIS_USER}
+          REDIS_PASSWORD=${REDIS_PASSWORD}
+          BOT_TOKEN=${BOT_TOKEN}
+          CHAT_ID=${CHAT_ID}
+          ADMIN_ID=${ADMIN_ID}
+          NOW_PAYMENTS_API_KEY=${NOW_PAYMENTS_API_KEY}
+          NOWPAYMENTS_PUBLIC=${NOWPAYMENTS_PUBLIC}
+          NOWPAYMENTS_EMAIL=${NOWPAYMENTS_EMAIL}
+          NOWPAYMENTS_PASSWORD=${NOWPAYMENTS_PASSWORD}
+          EOF
+          cat /home/artem/.env
+
+  deploy:
+    runs-on: self-hosted
+    needs: create_env
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Pull latest code
+        run: |
+          git pull origin main
+
+      - name: Down Docker old
+        run: |
+          cp /home/artem/.env .env
+          docker-compose down
+
+      - name: Build Docker image
+        run: |
+          docker-compose build
+
+      - name: Run Docker Compose
+        run: |
+          docker-compose up -d
