@@ -7,6 +7,8 @@ import time
 import aioredis
 import websockets
 
+from utils.connect import connect_redis
+
 OKX_WS_URL  = os.getenv("OKX_WS_URL", "wss://ws.okx.com:8443/ws/v5/public")
 CHANNEL     = os.getenv("OKX_CHANNEL", "trades")
 INST_ID     = os.getenv("OKX_INST_ID", "BTC-USDT")
@@ -16,16 +18,16 @@ RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", 5))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-async def connect_redis():
-    while True:
-        try:
-            r = await aioredis.from_url(REDIS_DSN, encoding="utf-8", decode_responses=True)
-            await r.ping()
-            logging.info("Connected to Redis")
-            return r
-        except Exception as e:
-            logging.warning(f"Redis connect error: {e}, retry in {RECONNECT_DELAY}s")
-            await asyncio.sleep(RECONNECT_DELAY)
+# async def connect_redis():
+#     while True:
+#         try:
+#             r = await aioredis.from_url(REDIS_DSN, encoding="utf-8", decode_responses=True)
+#             await r.ping()
+#             logging.info("Connected to Redis")
+#             return r
+#         except Exception as e:
+#             logging.warning(f"Redis connect error: {e}, retry in {RECONNECT_DELAY}s")
+#             await asyncio.sleep(RECONNECT_DELAY)
 
 async def consume_okx(redis):
     while True:
