@@ -10,6 +10,19 @@ services:
     networks:
       - teaker_list
 
+  strategy_rt:
+    build:
+      context: strategy_rt
+      dockerfile: Dockerfile
+    container_name: strategy_rt
+    volumes:
+    - ./utils:/startegy_rt/src/utils
+    networks:
+    - teaker_list
+    restart: always
+    depends_on:
+      - redis
+
   teaklisten:
     build: 
       context: teaklisten/
