@@ -152,7 +152,8 @@ class Trade:
                 continue
 
             closes = await load_4h_closes()
-            stp_loss_now = [self.stop_loss > closes - STOP_LOSS_PIPS, self.stop_loss < closes + STOP_LOSS_PIPS][self.side == 'short']
+            closes = closes.get(self.symbol.replace('-SWAP', ''))
+            stp_loss_now = [self.stop_loss > closes - STOP_LOSS_PIPS, self.stop_loss > closes + STOP_LOSS_PIPS][self.side == 'short']
             if stp_loss_now:
                 self.stop_loss = [closes - STOP_LOSS_PIPS, closes + STOP_LOSS_PIPS][self.side == 'short']
             
