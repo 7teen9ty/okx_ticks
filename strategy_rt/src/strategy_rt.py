@@ -129,6 +129,8 @@ class Trade:
                     )
         logging.info(req)
 
+        return None
+
     def _set_leverage(self, leverage: int):
         account_api = AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=API_FLAG)
         account_api.set_leverage(        
@@ -142,8 +144,17 @@ class Trade:
     async def monitor(self, redis, on_close):
         """Следим за тиками и вызываем колбек при SL срабатывании"""
         async for symbol, px, _ in tick_stream(redis):
+            logging.info(f"{symbol=} {px=} || {self.stop_loss}")
+
+            if 'SWAP' not in symbol.split('-'):
+                symbol = f'{symbol}-SWAP'
             if symbol != self.symbol:
                 continue
+
+            closes = await load_4h_closes()
+            stp_loss_now = [self.stop_loss > closes - STOP_LOSS_PIPS, self.stop_loss < closes + STOP_LOSS_PIPS][self.side == 'short']
+            if stp_loss_now:
+                self.stop_loss = [closes - STOP_LOSS_PIPS, closes + STOP_LOSS_PIPS][self.side == 'short']
             
             if self.side == 'long' and px <= self.stop_loss:
                 logging.info(f"[Trade] SL hit LONG {self.symbol} @ {px}")
@@ -213,6 +224,7 @@ async def strategy():
         trade = Trade(symbol, entry, side, last_close)
         await trade.open_position()
         active_positions.add(symbol)
+        logging.info(active_positions)
         # мониторим SL с колбеком
         asyncio.create_task(trade.monitor(redis, on_trade_close))
         # сбрасываем min/max
