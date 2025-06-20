@@ -66,23 +66,25 @@ async def load_4h_closes():
     return closes
 
 
-async def tick_stream(redis):
-    """
-    Асинхронный генератор тиков из Redis Pub/Sub.
-    """
-    pubsub = redis.pubsub()
-    await pubsub.subscribe(REDIS_STREAM)
-    try:
-        while True:
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg and msg['type'] == 'message':
-                data = json.loads(msg['data'])
-                yield data['instId'], float(data['px']), data
-            else:
-                await asyncio.sleep(0.001)
-    finally:
-        await pubsub.unsubscribe(REDIS_STREAM)
-        await pubsub.close()
+async def tick_stream(redis, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(REDIS_STREAM)
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg['type'] == 'message':
+                    data = json.loads(msg['data'])
+                    yield data['instId'], float(data['px']), data
+                else:
+                    await asyncio.sleep(0.001)
+        except aioredis.ConnectionError as e:
+            print(f"Redis connection error: {e}, retrying in 3s...")
+            await asyncio.sleep(3)
+        except Exception as e:
+            print(f"Unhandled error in tick_stream: {e}")
+            break
+
 
 class Trade:
     """
@@ -153,7 +155,7 @@ class Trade:
 
             closes = await load_4h_closes()
             closes = closes.get(self.symbol.replace('-SWAP', ''))
-            stp_loss_now = [self.stop_loss > closes - STOP_LOSS_PIPS, self.stop_loss > closes + STOP_LOSS_PIPS][self.side == 'short']
+            stp_loss_now = [self.stop_loss < closes - STOP_LOSS_PIPS, self.stop_loss > closes + STOP_LOSS_PIPS][self.side == 'short']
             if stp_loss_now:
                 self.stop_loss = [closes - STOP_LOSS_PIPS, closes + STOP_LOSS_PIPS][self.side == 'short']
             
