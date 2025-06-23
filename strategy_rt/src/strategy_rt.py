@@ -1,29 +1,27 @@
 import os
+import time
 import json
 import logging
 import asyncio
 import dotenv
-import asyncpg
-import aioredis
-
+import websockets
 from datetime import datetime, timedelta
 from okx.Trade import TradeAPI
 from okx.Account import AccountAPI
 
+from sql_service.query_async import load_4h_closes, load_2_last_closes
 
 dotenv.load_dotenv()
 
 # Настройки из окружения
-REDIS_DSN      = os.getenv("REDIS_DSN", "redis://redis:6379/0")
-REDIS_STREAM   = os.getenv("REDIS_STREAM_CH", "ticks_stream")
-PG_DSN         = os.getenv("PG_DSN", "postgresql://user:pass@postgres:5432/dbname")
 OKX_INST_IDS   = os.getenv("OKX_INST_IDS", "BTC-USDT").split(",")
 THRESHOLD      = float(os.getenv("THRESHOLD_PIPS", 350))
 SIZE_POSITION  = float(os.getenv("SIZE_POSITION", 0.03))
 STOP_LOSS_PIPS = float(os.getenv("STOP_LOSS_PIPS", 100))
 PG_TICKS_TABLE = os.getenv("PG_TICKS_TABLE", "raw_data.ticks")
-LEVERAGE      = int(os.getenv("LEVERAGE", 3))
-API_KEY        = os.getenv("OKX_API_KEY", "")
+LEVERAGE       = int(os.getenv("LEVERAGE", 3))
+
+API_KEY       = os.getenv("OKX_API_KEY", "")
 if not API_KEY:
     raise ValueError("OKX_API_KEY must be set in environment variables")
 API_SECRET     = os.getenv("OKX_API_SECRET", "")
@@ -37,52 +35,32 @@ API_FLAG       = os.getenv("OKX_API_FLAG", "1")  # 1 - test, 0 - live
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 
-async def load_4h_closes():
-    """
-    Загружает цену закрытия последнего завершённого 4-часового бара для каждого инструмента.
-    Возвращает словарь {inst_id: close_price}.
-    """
-    pool = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
-    now = datetime.utcnow()
-    # начало текущего 4h-блока
-    block_start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=(now.hour % 4))
-    closes = {}
-    async with pool.acquire() as conn:
-        for inst in OKX_INST_IDS:
-            row = await conn.fetchrow(
-                f"""
-                SELECT px AS close
-                FROM {PG_TICKS_TABLE}
-                WHERE inst_id = $1
-                AND recv_ts < $2
-                ORDER BY recv_ts DESC
-                LIMIT 1
-                """,
-                inst, block_start
-            )
-            closes[inst] = float(row["close"]) if row and row["close"] is not None else None
-            logging.info(f"[Strategy] 4h close for {inst}: {closes[inst]}")
-    await pool.close()
-    return closes
 
+async def tick_stream(max_retries=100, retry_delay=5):
+    url = "wss://wspap.okx.com:8443/ws/v5/public" if API_FLAG == "1" else "wss://ws.okx.com:8443/ws/v5/public"
+    retry_count = 0
+    while retry_count < max_retries:
+        logging.info('Connect websocket')
+        try:
+            logging.info('Connect True')
+            async with websockets.connect(url, ping_interval=None) as ws:
+                await ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": [{"channel": "tickers", "instId": f"{symbol}"} for symbol in OKX_INST_IDS]
+                }))
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    if "data" in data:
+                        for item in data["data"]:
+                            yield item["instId"], float(item["last"]), item
+                    await asyncio.sleep(0.001)
 
-async def tick_stream(redis):
-    """
-    Асинхронный генератор тиков из Redis Pub/Sub.
-    """
-    pubsub = redis.pubsub()
-    await pubsub.subscribe(REDIS_STREAM)
-    try:
-        while True:
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg and msg['type'] == 'message':
-                data = json.loads(msg['data'])
-                yield data['instId'], float(data['px']), data
-            else:
-                await asyncio.sleep(0.001)
-    finally:
-        await pubsub.unsubscribe(REDIS_STREAM)
-        await pubsub.close()
+        except Exception as e:
+            logging.warning(f"[OKX WS] Connection error: {e}, retrying in {retry_delay}s")
+            retry_count += 1
+            await asyncio.sleep(retry_delay)
+
 
 class Trade:
     """
@@ -129,6 +107,8 @@ class Trade:
                     )
         logging.info(req)
 
+        return None
+
     def _set_leverage(self, leverage: int):
         account_api = AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=API_FLAG)
         account_api.set_leverage(        
@@ -139,11 +119,29 @@ class Trade:
         )
         logging.info(f"[Trade] leverage set to {leverage} for {self.symbol} on {self.side} side")
 
-    async def monitor(self, redis, on_close):
+    async def monitor(self, on_close):
         """Следим за тиками и вызываем колбек при SL срабатывании"""
-        async for symbol, px, _ in tick_stream(redis):
+        time_start = time.time()
+        closes = await load_4h_closes()
+        async for symbol, px, _ in tick_stream():
+            logging.info(f"{symbol=} {px=} || {self.stop_loss}")
+
+            if 'SWAP' not in symbol.split('-'):
+                symbol = f'{symbol}-SWAP'
             if symbol != self.symbol:
                 continue
+            utc_hour, utc_minute = [datetime.utcnow().hour,datetime.utcnow().minute]
+            if utc_hour in [00, 4, 8, 12, 16, 20, 24] and utc_minute == 0 and time_start - time.time() > 60:
+                "Обновление клоза за 4 часа"
+                logging.info('[INFO] Update close for 4 hours')
+                time.sleep(1)
+                time_start = time.time()
+                closes = await load_4h_closes()
+
+            closes_symbol = closes.get(self.symbol.replace('-SWAP', ''))
+            stp_loss_now = [self.stop_loss < closes_symbol - STOP_LOSS_PIPS, self.stop_loss > closes_symbol + STOP_LOSS_PIPS][self.side == 'short']
+            if stp_loss_now:
+                self.stop_loss = [closes_symbol - STOP_LOSS_PIPS, closes_symbol + STOP_LOSS_PIPS][self.side == 'short']
             
             if self.side == 'long' and px <= self.stop_loss:
                 logging.info(f"[Trade] SL hit LONG {self.symbol} @ {px}")
@@ -173,8 +171,6 @@ class Trade:
         on_close(self.symbol)
 
 async def strategy():
-    # инициализация Redis
-    redis = await aioredis.from_url(REDIS_DSN, encoding='utf-8', decode_responses=True)
     # загрузка последних 4h close
     closes = await load_4h_closes()
     # активные позиции по символам
@@ -189,7 +185,8 @@ async def strategy():
         active_positions.discard(symbol)
 
     # слушаем тики
-    async for symbol, px, _ in tick_stream(redis):
+    logging.info('Tick starter')
+    async for symbol, px, _ in tick_stream():
         if symbol not in OKX_INST_IDS:
             continue
         if symbol in active_positions:
@@ -213,8 +210,9 @@ async def strategy():
         trade = Trade(symbol, entry, side, last_close)
         await trade.open_position()
         active_positions.add(symbol)
-        # мониторим SL с колбеком
-        asyncio.create_task(trade.monitor(redis, on_trade_close))
+        logging.info(active_positions)
+
+        asyncio.create_task(trade.monitor(on_trade_close))
         # сбрасываем min/max
         mins[symbol], maxs[symbol] = float('inf'), float('-inf')
 
