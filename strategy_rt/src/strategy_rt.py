@@ -137,7 +137,9 @@ class Trade:
             stp_loss_now = [self.stop_loss < closes_symbol - STOP_LOSS_PIPS, self.stop_loss > closes_symbol + STOP_LOSS_PIPS][self.side == 'short']
             if stp_loss_now:
                 self.stop_loss = [closes_symbol - STOP_LOSS_PIPS, closes_symbol + STOP_LOSS_PIPS][self.side == 'short']
-            if self.side == 'long' and px >= self.entry_price + (self.count * THRESHOLD) and self.count < 4:
+            if self.side == 'long' \
+            and px >= (self.entry_price + ((self.count + 1) * THRESHOLD)) \
+            and self.count < 4:
                 await self.open_position(size_dep=LIST_BUY_SIZE[self.count])
                 self.count += 1
                 self.stop_loss = [px - STOP_LOSS_PIPS, px + STOP_LOSS_PIPS][self.side == 'short']
