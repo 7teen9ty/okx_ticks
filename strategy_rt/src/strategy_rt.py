@@ -140,6 +140,8 @@ class Trade:
             if self.side == 'long' and px >= self.entry_price + (self.count * THRESHOLD) and self.count < 4:
                 await self.open_position(size_dep=LIST_BUY_SIZE[self.count])
                 self.count += 1
+                self.stop_loss = [px - STOP_LOSS_PIPS, px + STOP_LOSS_PIPS][self.side == 'short']
+                logging.info(f"[INFO] {self.count=} {px=} || {self.stop_loss}reenter")
             if self.side == 'long' and px <= self.stop_loss:
                 logging.info(f"[Trade] SL hit LONG {self.symbol} @ {px}")
 
@@ -155,6 +157,8 @@ class Trade:
                 self.count -= 1
                 if self.count <= 0:
                     break
+                else:
+                    self.stop_loss = [px - THRESHOLD, px + THRESHOLD][self.side == 'short']
 
             if self.side == 'short' and px >= self.stop_loss:
                 logging.info(f"[Trade] SL hit SHORT {self.symbol} @ {px}")
