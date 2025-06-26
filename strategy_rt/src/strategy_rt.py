@@ -40,31 +40,48 @@ logging.basicConfig(level=logging.INFO,
 async def tick_stream(max_retries=100, retry_delay=5):
     url = "wss://wspap.okx.com:8443/ws/v5/public" if API_FLAG == "1" else "wss://ws.okx.com:8443/ws/v5/public"
     retry_count = 0
+
+    # Формируем список аргументов для подписки на каждый SWAP инструмент
+
+    args = [{"channel": "tickers",
+            "instType": "SWAP",
+            "instId": inst_id} for inst_id in OKX_INST_IDS]
+
     while retry_count < max_retries:
-        logging.info('Connect websocket')
+        logging.info('Connecting to OKX WebSocket...')
         try:
-            logging.info('Connect True')
             async with websockets.connect(url, ping_interval=None) as ws:
+                logging.info('WebSocket connection established.')
+
+                # Отправляем подписку
                 await ws.send(json.dumps({
                     "op": "subscribe",
-                    "args": [{"channel": "tickers", "instId": f"{symbol}"} for symbol in OKX_INST_IDS]
+                    "args": args
                 }))
+
                 while True:
                     msg = await ws.recv()
                     data = json.loads(msg)
+
                     if "data" in data:
                         for item in data["data"]:
-                            yield item["instId"], float(item["last"]), item
+                            inst_id = item.get("instId")
+                            last_price = float(item.get("last", 0))
+                            yield inst_id, last_price, item
+
                     await asyncio.sleep(0.001)
 
         except Exception as e:
-            logging.warning(f"[OKX WS] Connection error: {e}, retrying in {retry_delay}s")
+            logging.warning(f"WebSocket error: {e}. Retrying in {retry_delay} seconds...")
             retry_count += 1
             await asyncio.sleep(retry_delay)
+
+    raise ConnectionError("Failed to connect to OKX WebSocket after multiple retries.")
 
 
 class Trade:
     def __init__(self, symbol: str, entry_price: float, side: str, last_close: float, on_close):
+        self.__symbol__ = symbol
         self.symbol = f"{symbol}-SWAP"
         if not self._valid_name_symbol:
             raise ValueError(f'Ошибка в имени символа торговли {self.symbol} {symbol}')
@@ -158,6 +175,7 @@ class Trade:
                 )
                 self.count -= 1
                 if self.count <= 0:
+                    active_positions.pop(self.__symbol__)
                     break
                 else:
                     self.stop_loss = [px - THRESHOLD, px + THRESHOLD][self.side == 'short']
@@ -175,12 +193,14 @@ class Trade:
                 )
                 self.count -= 1
                 if self.count <= 0:
+                    active_positions.pop(self.__symbol__)
                     break
 
         await self.on_close(self.symbol)
 
 async def strategy():
     closes = await load_4h_closes()
+    global active_positions
     active_positions = set()
     mins = {s: float('inf') for s in OKX_INST_IDS}
     maxs = {s: float('-inf') for s in OKX_INST_IDS}
@@ -188,6 +208,7 @@ async def strategy():
     async def on_trade_close(symbol):
         logging.info(f"[Strategy] position closed for {symbol}")
         active_positions.discard(symbol)
+    #TODO дописать тренд
 
     logging.info('Tick starter')
     async for symbol, px, _ in tick_stream():

@@ -16,10 +16,12 @@ from datetime import datetime, timedelta
 
 dotenv.load_dotenv()
 
-PG_TICKS_TABLE  = os.getenv("PG_TICKS_TABLE", "ticks")
-PG_CANDLES_TABLE= os.getenv("PG_CANDLES_TABLE", "candles")
-REDIS_KEY       = os.getenv("REDIS_KEY", "ticks")
-BGSAVE_POLL_SEC = 1
+PG_TICKS_TABLE          = os.getenv("PG_TICKS_TABLE", "ticks")
+PG_CANDLES_TABLE        = os.getenv("PG_CANDLES_TABLE", "candles")
+PG_CANDLES_TABLE_4H     = os.getenv("PG_CANDLES_TABLE_4H", "candles_4h")
+PG_RENKO_TABLE_4H       = os.getenv("PG_RENKO_TABLE_4H", "renko_4h")
+REDIS_KEY               = os.getenv("REDIS_KEY", "ticks")
+BGSAVE_POLL_SEC         = 1
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -85,10 +87,141 @@ async def trigger_bgsave_and_wait(redis):
             break
         await asyncio.sleep(BGSAVE_POLL_SEC)
 
+
+
+async def ensure_tables(pool):
+    """Создаём таблицы ticks и candles, если их нет."""
+    async with pool.acquire() as conn:
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {PG_TICKS_TABLE} (
+                recv_ts TIMESTAMP NOT NULL,
+                inst_id TEXT,
+                px NUMERIC,
+                sz NUMERIC,
+                side TEXT
+            );
+        """)
+
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {PG_CANDLES_TABLE} (
+                minute TIMESTAMP PRIMARY KEY,
+                open   NUMERIC,
+                high   NUMERIC,
+                low    NUMERIC,
+                close  NUMERIC
+            );
+        """)
+        
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {PG_CANDLES_TABLE_4H} (
+                timestamp TIMESTAMP PRIMARY KEY,
+                open   NUMERIC,
+                high   NUMERIC,
+                low    NUMERIC,
+                close  NUMERIC
+            );
+        """)
+        
+                
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {PG_RENKO_TABLE_4H} (
+                timestamp   TIMESTAMP PRIMARY KEY,
+                price       NUMERIC,
+                direction   TEXT
+            );
+        """)
+        
+    logging.info("Ensured tables exist: %s, %s, %s, %s", PG_TICKS_TABLE, PG_CANDLES_TABLE, PG_CANDLES_TABLE_4H, PG_RENKO_TABLE_4H)
+
+
+async def generate_4h_candles(pool: asyncpg.Pool):
+    """создает 4-х часовые свечки"""
+    logging.info("[INFO] create new candel for 4h")
+    async with pool.acquire() as conn:
+        # Получаем минимальное и максимальное время
+        result = await conn.fetchrow(f"SELECT MIN(recv_ts), MAX(recv_ts) FROM {PG_TICKS_TABLE}")
+        min_ts, max_ts = result['min'], result['max']
+        if not min_ts or not max_ts:
+            logging.warning('[WARNING] no max and min date')
+            return
+
+        # Округление времени вниз до начала 4ч интервала
+        current = min_ts.replace(minute=0, second=0, microsecond=0)
+        current = current - timedelta(hours=current.hour % 4)
+
+        while current < max_ts:
+            next_ts = current + timedelta(hours=4)
+
+            rows = await conn.fetch("""
+                SELECT price FROM raw_data.ticks
+                WHERE timestamp >= $1 AND timestamp < $2
+                ORDER BY timestamp
+            """, current, next_ts)
+
+            if not rows:
+                current = next_ts
+                continue
+
+            prices = [r['price'] for r in rows]
+            open_ = prices[0]
+            high = max(prices)
+            low = min(prices)
+            close = prices[-1]
+
+            await conn.execute(f"""
+                INSERT INTO {PG_CANDLES_TABLE_4H} (timestamp, open, high, low, close)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (timestamp) DO NOTHING
+            """, current, open_, high, low, close)
+
+            current = next_ts
+
+
+async def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
+    """создает 4-х часовые ренко"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT timestamp, close FROM {PG_CANDLES_TABLE_4H}
+            ORDER BY timestamp
+        """)
+        if not rows:
+            return
+
+        bricks = []
+        prev_price = rows[0]['close']
+        prev_direction = None
+
+        for row in rows[1:]:
+            price = row['close']
+            diff = price - prev_price
+            blocks = int(abs(diff) // block_size)
+
+            if blocks == 0:
+                continue
+
+            direction = 'up' if diff > 0 else 'down'
+            for i in range(blocks):
+                prev_price += block_size if direction == 'up' else -block_size
+                bricks.append((row['timestamp'], prev_price, direction))
+
+            prev_direction = direction
+
+        # Сохраняем в БД
+        await conn.executemany(f"""
+            INSERT INTO {PG_RENKO_TABLE_4H} (timestamp, price, direction)
+            VALUES ($1, $2, $3)
+            ON CONFLICT DO NOTHING
+        """, bricks)
+
+
 async def flush_loop(redis, pg_pool):
     """Основной цикл: каждые 60 с — батч из Redis → Postgres → BGSAVE → чистка → свечи."""
     while True:
-        await asyncio.sleep(60)
+        if datetime.utcnow().hour % 4 == 0 and datetime.utcnow().minute == 0:
+            await generate_4h_candles(pg_pool)
+            await generate_renko_from_4h(pg_pool)
+
+        await asyncio.sleep(60 - datetime.utcnow().second)
         try:
             items = await redis.lrange(REDIS_KEY, 0, -1)
             if not items:
@@ -123,37 +256,11 @@ async def flush_loop(redis, pg_pool):
             logging.error("Flush loop error: %s", e)
 
 
-async def ensure_tables(pool):
-    """Создаём таблицы ticks и candles, если их нет."""
-    async with pool.acquire() as conn:
-        await conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS {PG_TICKS_TABLE} (
-                recv_ts TIMESTAMP NOT NULL,
-                inst_id TEXT,
-                px NUMERIC,
-                sz NUMERIC,
-                side TEXT
-            );
-        """)
-
-        await conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS {PG_CANDLES_TABLE} (
-                minute TIMESTAMP PRIMARY KEY,
-                open   NUMERIC,
-                high   NUMERIC,
-                low    NUMERIC,
-                close  NUMERIC
-            );
-        """)
-    logging.info("Ensured tables exist: %s, %s", PG_TICKS_TABLE, PG_CANDLES_TABLE)
-
-
 async def main():
     redis = await connect_redis()
     pg_pool = await connect_pg()
 
     await ensure_tables(pg_pool)
-
     await flush_loop(redis, pg_pool)
 
 if __name__ == "__main__":
