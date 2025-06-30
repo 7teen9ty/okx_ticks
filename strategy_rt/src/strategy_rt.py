@@ -175,7 +175,7 @@ class Trade:
                 )
                 self.count -= 1
                 if self.count <= 0:
-                    active_positions.pop(self.__symbol__)
+                    active_positions.remove(self.__symbol__)
                     break
                 else:
                     self.stop_loss = [px - THRESHOLD, px + THRESHOLD][self.side == 'short']
@@ -193,7 +193,7 @@ class Trade:
                 )
                 self.count -= 1
                 if self.count <= 0:
-                    active_positions.pop(self.__symbol__)
+                    active_positions.remove(self.__symbol__)
                     break
 
         await self.on_close(self.symbol)
