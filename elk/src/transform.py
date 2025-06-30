@@ -149,37 +149,44 @@ def generate_4h_candles(pool: asyncpg.Pool):
                 logging.warning('[WARNING] no max and min date')
                 return
 
-        # Округление времени вниз до начала 4ч интервала
-            current = min_ts.replace(minute=0, second=0, microsecond=0)
-            current = current - timedelta(hours=current.hour % 4)
+            cursor.execute(f"SELECT MAX(timestamp) FROM {PG_CANDLES_TABLE_4H}")
+            last_candle_ts = cursor.fetchone()[0]
 
-            while current < max_ts:
-                next_ts = current + timedelta(hours=4)
-            
-                cursor.execute(f"""
-                    SELECT px as price FROM {PG_TICKS_TABLE}
-                    WHERE recv_ts >= '{current}' AND recv_ts < '{next_ts}'
-                    ORDER BY recv_ts
-                """)
-                rows = cursor.fetchall()
+            # Если свечей нет — начинаем с самого первого тика
+            if last_candle_ts is None:
+                logging.info("[INFO] No 4h candles found, starting from the first tick")
+                last_candle_ts = min_ts
+            current = last_candle_ts
+            logging.info(f"[INFO] {max_ts=} {current=}")
+            if max_ts > current + timedelta(hours=4):
+                
+                while current < max_ts:
+                    next_ts = current + timedelta(hours=4)
+                
+                    cursor.execute(f"""
+                        SELECT px as price FROM {PG_TICKS_TABLE}
+                        WHERE recv_ts >= '{current}' AND recv_ts < '{next_ts}'
+                        ORDER BY recv_ts
+                    """)
+                    rows = cursor.fetchall()
 
-                if not rows:
+                    if not rows:
+                        current = next_ts
+                        continue
+
+                    prices = [r[0] for r in rows]
+                    open_ = prices[0]
+                    high = max(prices)
+                    low = min(prices)
+                    close = prices[-1]
+
+                    cursor.execute(f"""
+                    INSERT INTO {PG_CANDLES_TABLE_4H} ("timestamp", open, high, low, close)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT ("timestamp") DO NOTHING
+                    """, (current, open_, high, low, close))    
+
                     current = next_ts
-                    continue
-
-                prices = [r[0] for r in rows]
-                open_ = prices[0]
-                high = max(prices)
-                low = min(prices)
-                close = prices[-1]
-
-                cursor.execute(f"""
-                INSERT INTO {PG_CANDLES_TABLE_4H} ("timestamp", open, high, low, close)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT ("timestamp") DO NOTHING
-                """, (current, open_, high, low, close))    
-
-                current = next_ts
             
             conn.commit()
             logging.info("[INFO] 4h candles generated successfully")
