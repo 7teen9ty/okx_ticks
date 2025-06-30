@@ -1,0 +1,6 @@
+**OKX Renko Trader**
+*author:* 7teen9ty
+**Zero point**
+*Copy repository:* git@github.com:7teen9ty/okx_ticks.git
+**First point**
+1. Do u need change .env.example to .env, and you need your cred to .env
