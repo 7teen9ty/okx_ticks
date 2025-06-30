@@ -134,12 +134,12 @@ async def ensure_tables(pool):
     logging.info("Ensured tables exist: %s, %s, %s, %s", PG_TICKS_TABLE, PG_CANDLES_TABLE, PG_CANDLES_TABLE_4H, PG_RENKO_TABLE_4H)
 
 
-async def generate_4h_candles(pool: asyncpg.Pool):
+def generate_4h_candles(pool: asyncpg.Pool):
     """создает 4-х часовые свечки"""
     logging.info("[INFO] create new candel for 4h")
-    async with pool.acquire() as conn:
+    with pool.acquire() as conn:
         # Получаем минимальное и максимальное время
-        result = await conn.fetchrow(f"SELECT MIN(recv_ts), MAX(recv_ts) FROM {PG_TICKS_TABLE}")
+        result = conn.fetchrow(f"SELECT MIN(recv_ts), MAX(recv_ts) FROM {PG_TICKS_TABLE}")
         min_ts, max_ts = result['min'], result['max']
         if not min_ts or not max_ts:
             logging.warning('[WARNING] no max and min date')
@@ -152,10 +152,10 @@ async def generate_4h_candles(pool: asyncpg.Pool):
         while current < max_ts:
             next_ts = current + timedelta(hours=4)
 
-            rows = await conn.fetch("""
-                SELECT price FROM raw_data.ticks
-                WHERE timestamp >= $1 AND timestamp < $2
-                ORDER BY timestamp
+            rows = conn.fetch("""
+                SELECT px as price FROM raw_data.ticks
+                WHERE "timestamp" >= $1 AND "timestamp" < $2
+                ORDER BY "timestamp"
             """, current, next_ts)
 
             if not rows:
@@ -168,21 +168,21 @@ async def generate_4h_candles(pool: asyncpg.Pool):
             low = min(prices)
             close = prices[-1]
 
-            await conn.execute(f"""
-                INSERT INTO {PG_CANDLES_TABLE_4H} (timestamp, open, high, low, close)
+            conn.execute(f"""
+                INSERT INTO {PG_CANDLES_TABLE_4H} ("timestamp", open, high, low, close)
                 VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (timestamp) DO NOTHING
+                ON CONFLICT ("timestamp") DO NOTHING
             """, current, open_, high, low, close)
 
             current = next_ts
 
 
-async def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
+def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
     """создает 4-х часовые ренко"""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(f"""
-            SELECT timestamp, close FROM {PG_CANDLES_TABLE_4H}
-            ORDER BY timestamp
+    with pool.acquire() as conn:
+        rows = conn.fetch(f"""
+            SELECT "timestamp", close FROM {PG_CANDLES_TABLE_4H}
+            ORDER BY "timestamp"
         """)
         if not rows:
             return
@@ -202,13 +202,13 @@ async def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
             direction = 'up' if diff > 0 else 'down'
             for i in range(blocks):
                 prev_price += block_size if direction == 'up' else -block_size
-                bricks.append((row['timestamp'], prev_price, direction))
+                bricks.append((row['"timestamp"'], prev_price, direction))
 
             prev_direction = direction
 
         # Сохраняем в БД
-        await conn.executemany(f"""
-            INSERT INTO {PG_RENKO_TABLE_4H} (timestamp, price, direction)
+        conn.executemany(f"""
+            INSERT INTO {PG_RENKO_TABLE_4H} ("timestamp", price, direction)
             VALUES ($1, $2, $3)
             ON CONFLICT DO NOTHING
         """, bricks)
@@ -218,8 +218,8 @@ async def flush_loop(redis, pg_pool):
     """Основной цикл: каждые 60 с — батч из Redis → Postgres → BGSAVE → чистка → свечи."""
     while True:
         if datetime.utcnow().hour % 4 == 0 and datetime.utcnow().minute == 0:
-            await generate_4h_candles(pg_pool)
-            await generate_renko_from_4h(pg_pool)
+            generate_4h_candles(pg_pool)
+            generate_renko_from_4h(pg_pool)
 
         await asyncio.sleep(60 - datetime.utcnow().second)
         try:
