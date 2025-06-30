@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import dotenv
+import psycopg2
 
 import aioredis
 import asyncpg
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta
 
 dotenv.load_dotenv()
 
+PG_DSN                  = os.getenv("PG_DSN", "postgresql://postgres:postgres@localhost:5432/postgres")   
 PG_TICKS_TABLE          = os.getenv("PG_TICKS_TABLE", "ticks")
 PG_CANDLES_TABLE        = os.getenv("PG_CANDLES_TABLE", "candles")
 PG_CANDLES_TABLE_4H     = os.getenv("PG_CANDLES_TABLE_4H", "candles_4h")
@@ -137,44 +139,50 @@ async def ensure_tables(pool):
 def generate_4h_candles(pool: asyncpg.Pool):
     """создает 4-х часовые свечки"""
     logging.info("[INFO] create new candel for 4h")
-    with pool.acquire() as conn:
+    
+    with psycopg2.connect(PG_DSN) as conn:
+        with conn.cursor() as cursor:
         # Получаем минимальное и максимальное время
-        result = conn.fetchrow(f"SELECT MIN(recv_ts), MAX(recv_ts) FROM {PG_TICKS_TABLE}")
-        min_ts, max_ts = result['min'], result['max']
-        if not min_ts or not max_ts:
-            logging.warning('[WARNING] no max and min date')
-            return
+            cursor.execute(f"SELECT MIN(recv_ts), MAX(recv_ts) FROM {PG_TICKS_TABLE}")
+            min_ts, max_ts = cursor.fetchone()
+            if not min_ts or not max_ts:
+                logging.warning('[WARNING] no max and min date')
+                return
 
         # Округление времени вниз до начала 4ч интервала
-        current = min_ts.replace(minute=0, second=0, microsecond=0)
-        current = current - timedelta(hours=current.hour % 4)
+            current = min_ts.replace(minute=0, second=0, microsecond=0)
+            current = current - timedelta(hours=current.hour % 4)
 
-        while current < max_ts:
-            next_ts = current + timedelta(hours=4)
+            while current < max_ts:
+                next_ts = current + timedelta(hours=4)
+            
+                cursor.execute("""
+                    SELECT px as price FROM raw_data.ticks
+                    WHERE "timestamp" >= %s AND "timestamp" < %s
+                    ORDER BY "timestamp"
+                """, (current, next_ts))
+                rows = cursor.fetchall()
 
-            rows = conn.fetch("""
-                SELECT px as price FROM raw_data.ticks
-                WHERE "timestamp" >= $1 AND "timestamp" < $2
-                ORDER BY "timestamp"
-            """, current, next_ts)
+                if not rows:
+                    current = next_ts
+                    continue
 
-            if not rows:
-                current = next_ts
-                continue
+                prices = [r[0] for r in rows]
+                open_ = prices[0]
+                high = max(prices)
+                low = min(prices)
+                close = prices[-1]
 
-            prices = [r['price'] for r in rows]
-            open_ = prices[0]
-            high = max(prices)
-            low = min(prices)
-            close = prices[-1]
-
-            conn.execute(f"""
+                cursor.execute(f"""
                 INSERT INTO {PG_CANDLES_TABLE_4H} ("timestamp", open, high, low, close)
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT ("timestamp") DO NOTHING
-            """, current, open_, high, low, close)
+                """, (current, open_, high, low, close))    
 
-            current = next_ts
+                current = next_ts
+            
+            conn.commit()
+            logging.info("[INFO] 4h candles generated successfully")
 
 
 def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
