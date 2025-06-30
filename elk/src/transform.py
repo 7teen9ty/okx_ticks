@@ -156,11 +156,11 @@ def generate_4h_candles(pool: asyncpg.Pool):
             while current < max_ts:
                 next_ts = current + timedelta(hours=4)
             
-                cursor.execute("""
-                    SELECT px as price FROM raw_data.ticks
-                    WHERE "timestamp" >= %s AND "timestamp" < %s
-                    ORDER BY "timestamp"
-                """, (current, next_ts))
+                cursor.execute(f"""
+                    SELECT px as price FROM {PG_TICKS_TABLE}
+                    WHERE recv_ts >= '{current}' AND recv_ts < '{next_ts}'
+                    ORDER BY recv_ts
+                """)
                 rows = cursor.fetchall()
 
                 if not rows:
@@ -225,9 +225,9 @@ def generate_renko_from_4h(pool: asyncpg.Pool, block_size=350):
 async def flush_loop(redis, pg_pool):
     """Основной цикл: каждые 60 с — батч из Redis → Postgres → BGSAVE → чистка → свечи."""
     while True:
-        if datetime.utcnow().hour % 4 == 0 and datetime.utcnow().minute == 0:
-            generate_4h_candles(pg_pool)
-            generate_renko_from_4h(pg_pool)
+        # if datetime.utcnow().hour % 4 == 0 and datetime.utcnow().minute == 0:
+        generate_4h_candles(pg_pool)
+            # generate_renko_from_4h(pg_pool)
 
         await asyncio.sleep(60 - datetime.utcnow().second)
         try:
